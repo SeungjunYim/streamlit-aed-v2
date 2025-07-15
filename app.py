@@ -1,19 +1,128 @@
 import streamlit as st
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+from PIL import Image
+import numpy as np
+import os
+import json
+import matplotlib.pyplot as plt
+import pandas as pd
 
-# 제목 및 설명
-st.title("🚨 새로운 탐구용 AED 시뮬레이터")
-st.write("이건 두 번째 탐구용 웹앱입니다. 아래에서 위치를 선택하고 AED 경로를 탐색해보세요.")
+# ------------------------
+# 모델 정의
+# ------------------------
+class BayesianCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, 32, 3, padding=1)
+        self.relu = nn.ReLU()
+        self.pool = nn.MaxPool2d(2)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.dropout = nn.Dropout(0.5)
+        self.fc1 = nn.Linear(64 * 7 * 7, 10)
 
-# 선택할 수 있는 위치 리스트
-locations = [
-    "1-1 교실", "1-2 교실", "1-3 교실",
-    "2-1 교실", "2-2 교실", "3층 복도",
-    "과학실", "보건실", "체육관 입구"
-]
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = x.view(x.size(0), -1)
+        x = self.dropout(x)
+        return self.fc1(x)
 
-# 현재 위치 선택
-start = st.selectbox("📍 현재 위치를 선택하세요", locations)
+# ------------------------
+# 이미지 전처리
+# ------------------------
+def preprocess(image):
+    image = image.convert('L').resize((28, 28))
+    tensor = transforms.ToTensor()(image)
+    return tensor.unsqueeze(0)
 
-# 버튼 클릭 시 결과 표시
-if st.button("🛣️ AED 추천 경로 탐색하기"):
-    st.success(f"✅ {start}에서 가장 가까운 AED는 보건실입니다. 복도를 따라 오른쪽으로 이동하세요.")
+# ------------------------
+# 예측 함수
+# ------------------------
+def predict_with_uncertainty(model, image, n_iter=30):
+    model.train()  # MC Dropout 유지
+    preds = []
+    with torch.no_grad():
+        for _ in range(n_iter):
+            out = model(image)
+            prob = torch.softmax(out, dim=1)
+            preds.append(prob.cpu().numpy())
+    preds = np.array(preds)
+    mean = preds.mean(axis=0).squeeze()
+    entropy = -np.sum(mean * np.log(mean + 1e-10))
+    confidence = float(np.max(mean))
+    predicted_label = int(np.argmax(mean))
+    return predicted_label, confidence, entropy
+
+# ------------------------
+# 메인 앱 시작
+# ------------------------
+st.set_page_config(page_title="Bayesian AI 인식기", layout="centered")
+st.title("🤖 Bayesian 딥러닝 숫자 인식기")
+st.write("손글씨 숫자 이미지를 업로드하면 예측 결과와 불확실도를 보여줍니다.")
+
+uploaded_file = st.file_uploader("이미지를 업로드하세요 (숫자 손글씨)", type=["png", "jpg", "jpeg"])
+user_id = st.text_input("학습자 ID 입력", "")
+
+# 모델 로딩
+@st.cache_resource
+def load_model():
+    model = BayesianCNN()
+    model.load_state_dict(torch.load("model_mnist.pt", map_location=torch.device('cpu')))
+    model.eval()
+    return model
+
+model = load_model()
+
+if uploaded_file and user_id:
+    image = Image.open(uploaded_file)
+    tensor = preprocess(image)
+
+    label, conf, entropy = predict_with_uncertainty(model, tensor)
+
+    st.image(image, caption="입력 이미지", width=150)
+    st.write(f"**예측 결과:** {label}")
+    st.write(f"**신뢰도 (Confidence):** {conf:.4f}")
+    st.write(f"**불확실도 (Entropy):** {entropy:.4f}")
+
+    if entropy > 1.5:
+        st.warning("⚠️ 분포 외 입력(OOD) 가능성이 있습니다.")
+    elif conf < 0.7:
+        st.info("🤔 예측 신뢰도가 낮습니다. 검토가 필요합니다.")
+
+    # 예측 기록 저장
+    record = {
+        "user_id": user_id,
+        "prediction": label,
+        "confidence": conf,
+        "entropy": entropy,
+        "file_name": uploaded_file.name
+    }
+    os.makedirs("records", exist_ok=True)
+    with open(f"records/{user_id}_log.json", "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+# ------------------------
+# 예측 이력 분석 (선택적)
+# ------------------------
+st.markdown("---")
+st.subheader("📊 학습자 예측 기록 분석")
+selected_user = st.text_input("기록을 조회할 학습자 ID 입력", "")
+
+if selected_user:
+    filepath = f"records/{selected_user}_log.json"
+    if os.path.exists(filepath):
+        with open(filepath) as f:
+            data = [json.loads(line) for line in f]
+        df = pd.DataFrame(data)
+        st.dataframe(df)
+
+        st.write("### 신뢰도 및 불확실도 변화")
+        fig, ax = plt.subplots()
+        ax.plot(df['confidence'], label='Confidence')
+        ax.plot(df['entropy'], label='Entropy')
+        ax.legend()
+        st.pyplot(fig)
+    else:
+        st.error("해당 ID의 기록이 존재하지 않습니다.")
