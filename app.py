@@ -92,16 +92,16 @@ if uploaded_file and user_id:
         st.info("🤔 예측 신뢰도가 낮습니다. 검토가 필요합니다.")
 
     # 예측 기록 저장
-    record = {
-        "user_id": user_id,
-        "prediction": label,
-        "confidence": conf,
-        "entropy": entropy,
-        "file_name": uploaded_file.name
-    }
-    os.makedirs("records", exist_ok=True)
-    with open(f"records/{user_id}_log.json", "a") as f:
-        f.write(json.dumps(record) + "\n")
+record = {
+    "user_id": user_id,
+    "prediction": int(label),
+    "confidence": float(conf),
+    "entropy": float(entropy),
+    "file_name": str(uploaded_file.name)
+}
+os.makedirs("records", exist_ok=True)
+with open(f"records/{user_id}_log.json", "a") as f:
+    f.write(json.dumps(record) + "\n")
 
 # ------------------------
 # 예측 이력 분석 (선택적)
